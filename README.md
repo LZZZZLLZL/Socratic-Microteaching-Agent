@@ -1,4 +1,3 @@
-```markdown
 # 🍎 Socratic-Microteaching-Agent (学思践悟)
 
 > **基于多智能体（Multi-Agent）与 RAG 技术的智慧教育实训复盘系统**
