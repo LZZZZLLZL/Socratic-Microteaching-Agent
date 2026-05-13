@@ -10,7 +10,7 @@
 | :--- | :--- | :--- |
 | **前端 (Frontend)** | **Nuxt 4 (Vue 3)** | SSR/CSR 混合渲染，Pinia 状态管理 |
 | **后端 (Backend)** | **FastAPI (Python)** | 高性能异步框架，适配 Nuxt useFetch |
-| **核心 AI** | **DeepSeek-V3 / R1** | 大语言模型推理 (API 接入) |
+| **核心 AI** | **DeepSeek-V4** | 大语言模型推理 (API 接入) |
 | **本地多模态** | **OpenAI Whisper + Mediapipe** | 语音转写与姿态分析 (针对 3070 Ti 优化) |
 | **向量数据库** | **FAISS** | 本地 RAG 知识库检索 |
 
