@@ -2,6 +2,8 @@ import os
 from openai import OpenAI
 from dotenv import load_dotenv
 
+from core.runtime_config import runtime_config
+
 load_dotenv()
 
 # 苏格拉底导师的系统人格
@@ -48,14 +50,67 @@ INITIAL_ANALYSIS_PROMPT = """
 
 class SocraticAgent:
     def __init__(self):
-        self.client = OpenAI(
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-            base_url="https://api.deepseek.com"
-        )
+        # API Key 缺失时不再直接抛异常——否则整个后端（含模型监测、
+        # 视频转写、姿态分析等本地能力）都无法启动。
+        #
+        # 重要：这里**不再缓存 client**。API 配置可以通过前端界面在运行时修改，
+        # 因此每次调用都重新读取配置并按需构建客户端，改完即生效、
+        # 无需重启后端。
+        self._client_cache = None
+        self._client_cache_key = None
+
+        if not runtime_config.configured:
+            print("[Agent] 未配置 API Key —— 对话与点评功能不可用，"
+                  "本地模型能力（转写 / 姿态分析 / 课标检索）不受影响")
+
         # 内存中保存对话历史: {session_id: [messages]}
         self.sessions = {}
         # 存储 session 元数据（教态数据等，用户问及时再注入）
         self.sessions_meta = {}
+
+    # ------------------------------------------------------------------
+    # 客户端构建（运行时可变）
+    # ------------------------------------------------------------------
+    def _get_client(self):
+        """
+        按当前运行时配置构建 OpenAI 客户端。
+
+        以 (api_key, base_url) 作为缓存键，配置未变时复用连接；
+        配置变更后自动重建，从而实现「改完即生效」。
+        """
+        api_key = runtime_config.api_key
+        base_url = runtime_config.base_url
+
+        if not runtime_config.is_valid_key(api_key):
+            return None
+
+        cache_key = (api_key, base_url)
+        if self._client_cache is not None and self._client_cache_key == cache_key:
+            return self._client_cache
+
+        self._client_cache = OpenAI(api_key=api_key, base_url=base_url)
+        self._client_cache_key = cache_key
+        return self._client_cache
+
+    @property
+    def api_key_configured(self) -> bool:
+        """当前是否已配置可用的 API Key（供状态接口查询）"""
+        return runtime_config.configured
+
+    def _require_client(self):
+        """在需要调用大模型时校验凭证，缺失则给出明确提示"""
+        client = self._get_client()
+        if client is None:
+            raise RuntimeError(
+                "尚未配置 API Key。请在页面「完整模式 → API 设置」中填写，"
+                "或写入 backend/.env 后重启后端。"
+                "（快速预览模式无需 API Key，可直接体验完整流程）"
+            )
+        return client
+
+    def _model_name(self) -> str:
+        """当前使用的模型名"""
+        return runtime_config.model
 
     def _get_session(self, session_id: str):
         if session_id not in self.sessions:
@@ -64,8 +119,8 @@ class SocraticAgent:
 
     def analyze_teaching(self, text: str):
         """一次性分析（向后兼容）"""
-        response = self.client.chat.completions.create(
-            model="deepseek-chat",
+        response = self._require_client().chat.completions.create(
+            model=self._model_name(),
             messages=[
                 {"role": "system", "content": TUTOR_SYSTEM_PROMPT},
                 {"role": "user", "content": f"这是我的教学片段文稿，请进行引导式评价：\n{text}"}
@@ -77,8 +132,8 @@ class SocraticAgent:
     def analyze_with_rag(self, multimodal_context: str, standards: list):
         """基于RAG的一次性分析（向后兼容）"""
         standards_text = "\n".join(f"- {s}" for s in standards) if standards else "无匹配课标"
-        response = self.client.chat.completions.create(
-            model="deepseek-chat",
+        response = self._require_client().chat.completions.create(
+            model=self._model_name(),
             messages=[
                 {"role": "system", "content": TUTOR_SYSTEM_PROMPT},
                 {"role": "user", "content": INITIAL_ANALYSIS_PROMPT.format(
@@ -128,8 +183,8 @@ class SocraticAgent:
             else:
                 session.append({"role": "user", "content": user_message})
 
-        response = self.client.chat.completions.create(
-            model="deepseek-chat",
+        response = self._require_client().chat.completions.create(
+            model=self._model_name(),
             messages=session,
             stream=True,
             temperature=0.7
@@ -144,6 +199,47 @@ class SocraticAgent:
                 yield content
 
         session.append({"role": "assistant", "content": full_content})
+
+    def get_scoring_card(self, teaching_content: str) -> dict:
+        """
+        让 DeepSeek 对教学表现进行多维度打分，返回结构化数据
+        """
+        prompt = f"""请基于以下教学语言实录，对这位师范生进行多维度评分。
+
+【教学语言实录】
+{teaching_content}
+
+请从以下 6 个维度进行评分（百分制），每个维度给出一句话简评：
+
+1. 教学逻辑 —— 内容组织是否清晰、层次是否分明
+2. 内容准确性 —— 知识表达是否准确、有无错误
+3. 互动设计 —— 是否有启发式引导、提问设计
+4. 语言表达 —— 语言是否流畅、节奏把控如何
+5. 内容深度 —— 是否深入浅出、重点是否突出
+6. 教学设计 —— 导入-讲解-总结环节是否完整
+
+请严格按以下 JSON 格式返回（不要加任何其他文字）：
+
+{{"scores":[{{"name":"教学逻辑","score":85,"comment":"层次清晰，导入→讲解→总结脉络完整"}},{{"name":"内容准确性","score":90,"comment":"无知识性错误，概念表述规范"}},{{"name":"互动设计","score":65,"comment":"缺少启发式提问，互动环节设计不足"}},{{"name":"语言表达","score":78,"comment":"语速适中，但存在少量口头禅"}},{{"name":"内容深度","score":82,"comment":"重点较为突出，难点突破有方"}},{{"name":"教学设计","score":80,"comment":"环节基本完整，但导入稍显平淡"}}]}}"""
+
+        try:
+            response = self._require_client().chat.completions.create(
+                model=self._model_name(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1024
+            )
+            raw = response.choices[0].message.content.strip()
+            # 提取 JSON（可能被 ```json 包裹）
+            if "```" in raw:
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            import json
+            return json.loads(raw)
+        except Exception as e:
+            print(f"[Agent] 评分卡生成失败: {e}")
+            return {"scores": []}
 
     def clear_session(self, session_id: str):
         """清除指定 session 的对话历史"""

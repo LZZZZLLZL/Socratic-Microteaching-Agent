@@ -1,0 +1,5 @@
+# 学思践悟 体验版后端依赖（仅需少量包，无需 torch/whisper 等重型 AI 依赖）
+fastapi
+uvicorn
+python-dotenv
+openai

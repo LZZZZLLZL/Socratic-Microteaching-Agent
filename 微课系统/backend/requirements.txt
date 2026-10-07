@@ -3,7 +3,12 @@ uvicorn[standard]
 python-multipart
 python-dotenv
 openai
-langchain
+langchain-text-splitters
 faiss-cpu
 openai-whisper
 pydantic
+sentence-transformers
+ultralytics
+torch
+opencv-python
+numpy
